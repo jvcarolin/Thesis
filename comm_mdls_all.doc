@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Table 2 - Commercial Parcels</title>
+<style>
+table.texreg {margin: 10px auto;border-collapse: collapse;border-spacing: 0px;color: #000000;border-top: 2px solid #000000;}
+table.texreg thead .rule {border-bottom: 1px solid #000000;}
+table.texreg tbody tr.rule td {border-top: 1px solid #000000;}
+table.texreg tbody tr.bottomrule td {border-bottom: 2px solid #000000;}
+table.texreg tfoot td {font-size: 0.8em;}
+table.texreg th, table.texreg td {padding-left: 5px;padding-right: 5px;}
+</style>
+</head>
+<body>
+<table class="texreg">
+<caption>Table 2 - Commercial Parcels</caption>
+<thead>
+<tr>
+<th>&nbsp;</th>
+<th class = "rule" colspan="2">Without Structure Information</th>
+<th class = "rule" colspan="2">Includes Structure Information</th>
+</tr>
+<tr>
+<th>&nbsp;</th>
+<th>All Parcels</th>
+<th>&#8805 0.25 Acres</th>
+<th>All Parcels</th>
+<th>&#8805 0.25 Acres</th>
+</tr>
+</thead>
+<tbody>
+<tr class="rule">
+<td>(Intercept)</td>
+<td>15.947<sup>***</sup></td>
+<td>15.698<sup>***</sup></td>
+<td>14.833<sup>**</sup></td>
+<td>15.442</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>(0.486)</td>
+<td>(0.878)</td>
+<td>(4.395)</td>
+<td>(10.704)</td>
+</tr>
+<tr>
+<td>ln(Acres)</td>
+<td>0.619<sup>***</sup></td>
+<td>1.067<sup>***</sup></td>
+<td>0.406<sup>***</sup></td>
+<td>0.285</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>(0.050)</td>
+<td>(0.216)</td>
+<td>(0.052)</td>
+<td>(0.353)</td>
+</tr>
+<tr>
+<td>C-D Zoned</td>
+<td>-0.542</td>
+<td>0.061</td>
+<td>-0.936<sup>**</sup></td>
+<td>-0.506</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>(0.387)</td>
+<td>(0.617)</td>
+<td>(0.342)</td>
+<td>(0.737)</td>
+</tr>
+<tr>
+<td>Distance to Arch</td>
+<td>-0.002<sup>***</sup></td>
+<td>-0.002<sup>*</sup></td>
+<td>-0.002<sup>***</sup></td>
+<td>-0.003<sup>*</sup></td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>(0.000)</td>
+<td>(0.001)</td>
+<td>(0.000)</td>
+<td>(0.001)</td>
+</tr>
+<tr>
+<td>Moratorium</td>
+<td>0.294</td>
+<td>0.314</td>
+<td>0.330</td>
+<td>0.035</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>(0.312)</td>
+<td>(0.595)</td>
+<td>(0.249)</td>
+<td>(0.523)</td>
+</tr>
+<tr>
+<td>C-D Zoned AND Moratorium</td>
+<td>0.120</td>
+<td>0.063</td>
+<td>-0.163</td>
+<td>-0.043</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>(0.370)</td>
+<td>(0.699)</td>
+<td>(0.304)</td>
+<td>(0.690)</td>
+</tr>
+<tr>
+<td>Total # of Structures</td>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>0.298<sup>***</sup></td>
+<td>0.258</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>(0.048)</td>
+<td>(0.135)</td>
+</tr>
+<tr>
+<td>Total Square Footage</td>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>0.000<sup>**</sup></td>
+<td>0.000<sup>*</sup></td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>(0.000)</td>
+<td>(0.000)</td>
+</tr>
+<tr>
+<td>Year Built</td>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>0.000</td>
+<td>0.000</td>
+</tr>
+<tr>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>&nbsp;</td>
+<td>(0.002)</td>
+<td>(0.006)</td>
+</tr>
+<tr class="rule">
+<td>R<sup>2</sup></td>
+<td>0.620</td>
+<td>0.537</td>
+<td>0.782</td>
+<td>0.791</td>
+</tr>
+<tr>
+<td>Adj. R<sup>2</sup></td>
+<td>0.605</td>
+<td>0.465</td>
+<td>0.766</td>
+<td>0.692</td>
+</tr>
+<tr class="bottomrule">
+<td>Num. obs.</td>
+<td>127</td>
+<td>38</td>
+<td>114</td>
+<td>26</td>
+</tr>
+</tbody>
+<tfoot>
+<tr>
+<td colspan="5"><sup>***</sup>p &lt; 0.001; <sup>**</sup>p &lt; 0.01; <sup>*</sup>p &lt; 0.05 --- Data collected from website of Athens Clarke County Board of Tax Assessors</td>
+</tr>
+</tfoot>
+</table>
+</body>
+</html>

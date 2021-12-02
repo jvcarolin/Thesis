@@ -1,0 +1,538 @@
+---
+title: "Clean_Thesis_Code"
+author: "John Carolin"
+date: "12/1/2021"
+output: html_document
+---
+
+Preparing system
+```{r}
+### LOAD PACKAGES
+library(sf)
+library(sp)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(ggmap)
+library(magrittr)
+library(texreg)
+library(car)
+library(viridis)
+```
+
+```{r}
+# INITIALIZE VARIOUS VARIABLES TO BE USED LATER
+# Location of UGA arch
+arch = st_sfc(st_point(c(-83.375284, 33.957525))) %>% 
+  st_set_crs(4326)
+
+# List of outliers to be excluded from analysis
+# 171B4 C008 - 315 Oconee Street. The Mark. From what I can tell, this parcel is actually comprised of several parcels that were joined together by the owners of The Mark. The "collected" parcel inherited the sale information from all of the original parcels. There is no way to tie any of those transactions to information about the parcel that was actually sold. We can only see information about the combined parcel.
+# 163C2 A015 - 716 Pulaski Street. Barely under 2 acres of property sold for only $6,000. There's no way that this can be a market rate transaction. Property appears to contain 3 old (1940-1960) garages/warehouses. By satellite images, junk is strewn across the property. Sale value may be low because there is an obligation to clean up the property?
+# 171A3 F018 - 155 Pope Street. Sale being reported here doesn't appear to be for market value. Parcel was sold again in a multiple-transaction sale 1.5 years later for >17x the price ($12,500 vs $220,000).
+# 171A2 E004 - 393 W Hancock Ave. Again, appears to be a sale that isn't for market value. The parcel sold in 2002 for $295,000. It sold again in 2018 for $215,000. There are no indications that there was some sort of change to the property that necessitated that sort of price drop. The property is currently a rental property. Rent is set at a rate that would imply a significantly higher sale price than this.
+# 171B1 C003 - 412 N Thomas St. This is the Hyatt hotel downtown. There are two sales recorded here (and an additional unqualified sale that doesn't appear in the dataset). From what I can tell, both sales were completed while the hotel was under construction. Unfortunately, I don't feel like I'm able to effectively model the value of an under-construction building.
+outliers <- c("171B4 C008", "163C2 A015", "171A3 F018", "171A2 E004", "171B1 C003")
+```
+
+
+Loading and processing data
+```{r message = FALSE}
+### LOAD AND PROCESS SPATIAL DATA
+# Load data
+cd_shapes <- map(paste(path.expand(file.path("~", "Thesis", "Thesis Data", "C-D Zoned KMLs")),
+                       "/",
+                       list.files(file.path("~", "Thesis", "Thesis Data", "C-D Zoned KMLs")),
+                       sep = ""), st_read) %>% 
+  bind_rows() %>% 
+  distinct(Name, .keep_all = TRUE)
+
+buffered_shapes <- map(paste(path.expand(file.path("~", "Thesis", "Thesis Data", "Buffered KMLs")),
+                             "/",
+                             list.files(file.path("~", "Thesis", "Thesis Data", "Buffered KMLs")),
+                             sep = ""), st_read) %>% 
+  bind_rows() %>% 
+  distinct(Name, .keep_all = TRUE) %>% 
+  setdiff(cd_shapes)
+```
+
+
+```{r}
+### LOAD AND PROCESS IMPROVEMENT DATA
+# Load data
+improvements <- map(paste(path.expand(file.path("~", "Thesis", "Thesis Data", "Improvements")),
+                          "/",
+                          list.files(file.path("~", "Thesis", "Thesis Data", "Improvements")),
+                          sep = ""), read_csv, col_types = "fiiic") %>%
+  bind_rows()
+
+# Clean up year information
+improvements <- mutate(improvements, year_built = coalesce(year_built, actual_year_built)) %>% 
+  select(!actual_year_built)
+```
+
+
+```{r}
+### LOAD AND PROCESS MISC DATA
+# Load data listing parcels that were rezoned to C-D in Feb. 2021
+rezoned <- scan(path.expand(file.path("~", "Thesis", "Thesis Data", "rezoned_parcels.csv")),
+                what = character(), sep = "\n")
+```
+
+
+```{r}
+### LOAD AND PROCESS SALES DATA
+# Load data
+sales <- map(paste(path.expand(file.path("~", "Thesis", "Thesis Data", "Sales")),
+                   "/",
+                   list.files(path.expand(file.path("~", "Thesis", "Thesis Data", "Sales"))),
+                   sep = ""),
+             read_csv, col_types = "cccnffdfinnf") %>%
+  bind_rows() %>%
+  clean_names() %>%
+  mutate(sale_date = mdy(sale_date)) %>%
+  filter(parcel_id %in% cd_shapes$Name | parcel_id %in% buffered_shapes$Name) %>%
+  mutate(cd_zoned = parcel_id %in% cd_shapes$Name)
+sales %<>% left_join(rbind(cd_shapes, buffered_shapes), by = c("parcel_id" = "Name")) %>%
+  select(-"Description")
+
+# Filter improvements for Parcel ID and date, append to sales data
+imp_filter <- function(id, date, imp_tbl){
+  filtered <- filter(imp_tbl, parcel_id == id & year_built < year(date))
+  if(nrow(filtered) >= 1) {
+    sum_imp <- summarize(filtered,
+                         tot_sqft = sum(square_feet),
+                         tot_bldgs = sum(number_of_buildings),
+                         oldest = min(year_built),
+                         newest = max (year_built),
+                         weighted_age = sum(year_built * number_of_buildings)/sum(number_of_buildings)) %>% 
+      mutate(parcel_id = id, sale_date = date)
+    return(sum_imp)
+  }
+}
+
+filtered_improvements <- map2_dfr(sales$parcel_id, sales$sale_date, imp_filter, improvements)
+
+sales <- left_join(sales, filtered_improvements, by = c("parcel_id", "sale_date"))
+
+#Misc variables added/adjusted
+sales %<>%
+  mutate(condo = parcel_id %in% filter(improvements, description == "Condominium")$parcel_id) %>% #Add condo indicator
+  mutate(moratorium = sale_date > mdy("02/07/2017")) %>% #Add indicator for if parcel sale took place after initial moratorium was enacted
+  mutate(impacted = cd_zoned & sale_date > mdy("02/07/2017")) %>% #Add indicator for whether parcel sale was directly impacted by moratorium/ordinance change
+  mutate(cd_zoned = parcel_id %in% cd_shapes$Name) %>% #Add indicator for whether parcel is zoned C-D
+  mutate(arch_distance = as.numeric(st_distance(sales$geometry, arch))) %>% #Add distance from parcel to UGA arch
+  mutate(cd_zoned = if_else(parcel_id %in% rezoned, FALSE, cd_zoned)) #Update zoning for parcels that were rezoned to C-D in Feb. 2021. None should be in the set of sales, but just in case...
+
+sml_nz_acres <- min(sales$acres[sales$acres > 0])
+sales <- mutate(sales, log_acres = log(acres + sml_nz_acres/2))
+```
+
+
+```{r}
+### MISC
+# Split out `condos` dataset to ease plotting later
+condos <- filter(sales, condo == TRUE |
+                   (tot_sqft > 0 & acres <= 0.1 & parcel_class == "Residential"))
+```
+
+
+Modeling
+```{r}
+### ALL PROPERTY SALES - OLS
+## Does not include data on improvements
+all_sale_all_size <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                         data = filter(sales, !(parcel_id %in% outliers)))
+
+# Sales of small parcels
+all_sale_small <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                      data = filter(sales, acres < 0.25 & !(parcel_id %in% outliers)))
+
+# Sales of large parcels
+all_sale_large <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                      data = filter(sales, acres >= 0.25 & !(parcel_id %in% outliers)))
+
+## Includes data on improvements
+# Sales of parcels of all sizes
+all_sale_all_size_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                              data = filter(sales, !(parcel_id %in% outliers)))
+
+# Sales of small parcels
+all_sale_small_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                           data = filter(sales, acres < 0.25 & !(parcel_id %in% outliers)))
+
+# Sales of large parcels
+all_sale_large_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                           data = filter(sales, acres >= 0.25 & !(parcel_id %in% outliers)))
+```
+
+
+```{r}
+### COMMERCIAL PROPERTY SALES - OLS
+## Does not include data on improvements
+# Sales of parcels of all sizes
+comm_sale_all_size <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                         data = filter(sales, parcel_class != "Residential" & !(parcel_id %in% outliers)))
+
+# Sales of small parcels
+comm_sale_small <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                      data = filter(sales, parcel_class != "Residential" & acres < 0.25 & !(parcel_id %in% outliers)))
+
+# Sales of large parcels
+comm_sale_large <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                      data = filter(sales, parcel_class != "Residential" & acres >= 0.25 & !(parcel_id %in% outliers)))
+
+## Includes data on improvements
+# Sales of parcels of all sizes
+comm_sale_all_size_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                              data = filter(sales, parcel_class != "Residential" &!(parcel_id %in% outliers)))
+
+# Sales of small parcels
+comm_sale_small_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                           data = filter(sales, parcel_class != "Residential" & acres < 0.25 & !(parcel_id %in% outliers)))
+
+# Sales of large parcels
+comm_sale_large_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                           data = filter(sales, parcel_class != "Residential" & acres >= 0.25 & !(parcel_id %in% outliers)))
+```
+
+
+```{r}
+### RESIDENTIAL PROPERTY SALES
+## Does not include data on improvements
+# Sales of parcels of all sizes
+res_sale_all_size <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium,
+                        data = filter(sales, parcel_class == "Residential" & !(parcel_id %in% outliers)))
+
+## Includes data on improvements
+# Sales of parcels of all sizes
+res_sale_all_size_bldg <- lm(log(sale_price) ~ log_acres + cd_zoned + arch_distance + cd_zoned*moratorium + tot_bldgs + tot_sqft + weighted_age,
+                             data = filter(sales, parcel_class == "Residential" & !(parcel_id %in% outliers)))
+
+# Sales of condos
+res_sale_condo_bldg <- lm(log(sale_price) ~ cd_zoned + arch_distance + moratorium + tot_sqft + weighted_age + sale_date,
+                          data = filter(condos, !(parcel_id %in% outliers)))
+```
+
+
+Output
+```{r}
+### LM TABLES
+# Write lists to be used as arguments in function calls
+# Because of how HTML handles certain special characters, I need to use codes for certain characters in order to get them to display properly
+mdl_note <- "%stars --- Data collected from website of Athens Clarke County Board of Tax Assessors"
+all_mdls_all <- list(all_sale_all_size, all_sale_large, all_sale_all_size_bldg, all_sale_large_bldg)
+comm_mdls_all <- list(comm_sale_all_size, comm_sale_large, comm_sale_all_size_bldg, comm_sale_large_bldg)
+res_mdls_all <- list(res_sale_all_size, res_sale_all_size_bldg, res_sale_condo_bldg)
+all_mdl_header <- list("Without Structure Information" = 1:2, "Includes Structure Information" = 3:4)
+comm_mdl_header <- list("Without Structure Information" = 1:2, "Includes Structure Information" = 3:4)
+res_mdl_header <- list("Without Structure Information" = 1, "Includes Structure Information" = 2:3)
+all_mdl_names <- c("All Parcels", "&#8805 0.25 Acres", "All Parcels", "&#8805 0.25 Acres")
+comm_mdl_names <- c("All Parcels", "&#8805 0.25 Acres", "All Parcels", "&#8805 0.25 Acres")
+res_mdl_names <- c("All Parcels", "All Parcels", "Condos")
+all_coefs <- list("(Intercept)" = "(Intercept)",
+                   "log_acres" = "ln(Acres)",
+                   "cd_zonedTRUE" = "C-D Zoned",
+                   "arch_distance" = "Distance to Arch",
+                   "moratoriumTRUE" = "Moratorium",
+                   "cd_zonedTRUE:moratoriumTRUE" = "C-D Zoned AND Moratorium",
+                   "tot_bldgs" = "Total # of Structures",
+                   "tot_sqft" = "Total Square Footage",
+                   "weighted_age" = "Year Built")
+comm_coefs <- list("(Intercept)" = "(Intercept)",
+                   "log_acres" = "ln(Acres)",
+                   "cd_zonedTRUE" = "C-D Zoned",
+                   "arch_distance" = "Distance to Arch",
+                   "moratoriumTRUE" = "Moratorium",
+                   "cd_zonedTRUE:moratoriumTRUE" = "C-D Zoned AND Moratorium",
+                   "tot_bldgs" = "Total # of Structures",
+                   "tot_sqft" = "Total Square Footage",
+                   "weighted_age" = "Year Built")
+res_coefs <- list("(Intercept)" = "(Intercept)",
+                  "log_acres" = "ln(Acres)",
+                  "cd_zonedTRUE" = "C-D Zoned",
+                  "arch_distance" = "Distance to Arch",
+                  "moratoriumTRUE" = "Moratorium",
+                  "cd_zonedTRUE:moratoriumTRUE" = "C-D Zoned AND Moratorium",
+                  "tot_bldgs" = "Total # of Structures",
+                  "tot_sqft" = "Total Square Footage",
+                  "weighted_age" = "Year Built")
+
+# Build table, write file to HTML/.doc file
+htmlreg(all_mdls_all,
+        file = path.expand(file.path("~", "Thesis", "all_mdls_all.doc")),
+        inline.css = FALSE, doctype = TRUE, html.tag = TRUE, head.tag = TRUE, body.tag = TRUE, digits = 3,
+        custom.header = all_mdl_header,
+        custom.coef.map = all_coefs,
+        custom.model.names = all_mdl_names,
+        caption = "Table 1 - All Parcels", caption.above = TRUE,
+        custom.note = mdl_note)
+
+htmlreg(comm_mdls_all,
+        file = path.expand(file.path("~", "Thesis", "comm_mdls_all.doc")),
+        inline.css = FALSE, doctype = TRUE, html.tag = TRUE, head.tag = TRUE, body.tag = TRUE, digits = 3,
+        custom.header = comm_mdl_header,
+        custom.coef.map = comm_coefs,
+        custom.model.names = comm_mdl_names,
+        caption = "Table 2 - Commercial Parcels", caption.above = TRUE,
+        custom.note = mdl_note)
+
+htmlreg(res_mdls_all,
+        file = path.expand(file.path("~", "Thesis", "res_mdls_all.doc")),
+        inline.css = FALSE, doctype = TRUE, html.tag = TRUE, head.tag = TRUE, body.tag = TRUE, digits = 3,
+        custom.header = res_mdl_header,
+        custom.coef.map = res_coefs,
+        custom.model.names = res_mdl_names,
+        caption = "Table 3 - Residential Parcels", caption.above = TRUE,
+        custom.note = mdl_note)
+
+```
+
+```{r}
+### LM DIAGNOSTIC PLOTS
+# Written to .png
+# Set params for all plots.
+ppi <- 300
+
+## All Types
+# All Sizes, No Structures
+png(file = path.expand(file.path("~", "Thesis", "all_sale_all_size.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(all_sale_all_size, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of All Parcel Types of All Sizes, Without Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+# All Sizes, Includes Structures
+png(file = path.expand(file.path("~", "Thesis", "all_sale_all_size_bldg.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(all_sale_all_size_bldg, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of All Parcel Types of All Sizes, Includes Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+# Large, No Structures
+png(file = path.expand(file.path("~", "Thesis", "all_sale_large.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(all_sale_large, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Large Parcels of All Types, Without Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+# Large, Includes Structures
+png(file = path.expand(file.path("~", "Thesis", "all_sale_large_bldg.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(all_sale_large_bldg, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Large Parcels of All Types, Includes Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+## Commercial
+# All Sizes, No Structures
+png(file = path.expand(file.path("~", "Thesis", "comm_sale_all_size.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(comm_sale_all_size, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Commercial Parcels of All Sizes, Without Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+# All Sizes, Structures Included
+png(file = path.expand(file.path("~", "Thesis", "comm_sale_all_size_bldg.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(comm_sale_all_size_bldg, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Commercial Parcels of All Sizes, Includes Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+## Residential
+# All Sizes, No Structures
+png(file = path.expand(file.path("~", "Thesis", "res_sale_all_size.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(res_sale_all_size, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Residential Parcels of All Sizes, Without Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+
+# All Sizes, Structures Included
+png(file = path.expand(file.path("~", "Thesis", "res_sale_all_size_bldg.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(res_sale_all_size_bldg, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Residential Parcels of All Sizes, Includes Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+
+# Condos, Structures Included
+png(file = path.expand(file.path("~", "Thesis", "res_sale_condo_bldg.png")),
+    width = 6*ppi, height = 5*ppi, res = ppi)
+par(mfrow = c(2, 2))
+plot(res_sale_condo_bldg, ask = FALSE, add.smooth = TRUE)
+mtext("Regression Diagnostic Plots",
+      outer = TRUE,
+      side = 3,
+      line = -1.5)
+mtext("For Model of Condos, Includes Structure Information",
+      outer = TRUE,
+      side = 3,
+      line = -2.5,
+      cex = 0.75)
+dev.off()
+
+```
+
+
+
+```{r cache = TRUE}
+### MAPS (1)
+# Load Stamen Map For Full Sample
+bound_box_all <- st_bbox(buffered_shapes)
+bg_map_all <- get_stamenmap(bbox = c(left = bound_box_all[["xmin"]],
+                                     bottom = bound_box_all[["ymin"]],
+                                     right = bound_box_all[["xmax"]],
+                                     top = bound_box_all[["ymax"]]),
+                            zoom = 16,
+                            maptype = "toner-lines",
+                            force = FALSE)
+
+bound_box_sales <- st_bbox(filter(buffered_shapes, Name %in% sales$parcel_id))
+bg_map_sales <- get_stamenmap(bbox = c(left = bound_box_sales[["xmin"]],
+                                       bottom = bound_box_sales[["ymin"]],
+                                       right = bound_box_sales[["xmax"]],
+                                       top = bound_box_sales[["ymax"]]),
+                              zoom = 17,
+                              maptype = "toner-lines",
+                              force = FALSE)
+```
+
+
+
+```{r}
+### MAPS (2)
+# Map Of Parcels In Sample
+png(file = path.expand(file.path("~", "Thesis", "all_parcels_map.png")),
+    width = 6 * ppi, height = 7.5 * ppi, res = ppi)
+par(mar = c(0, 0, 0, 0))
+plot(st_geometry(st_transform(buffered_shapes, crs = 3857)), col = 'blue', bgMap = bg_map_all)
+plot(st_geometry(st_transform(cd_shapes, crs = 3857)), col = 'red', add = TRUE)
+plot(st_transform(st_geometry(arch), 3857), add = TRUE)
+legend(x =-9282500, y = 4022023, legend = c("C-D Zoned", "Other Zoned"), fill = c('red', 'blue'))
+mtext("Fig 1: Map of all parcels included in sample area",
+      outer = TRUE,
+      side = 3,
+      line = -1.5,
+      cex = 1.5)
+dev.off()
+
+# Map Of Parcels With Sales Recorded In Sample
+png(file = path.expand(file.path("~", "Thesis", "all_sales-map.png")),
+    width = 6 * ppi, height = 6 * ppi, res = ppi)
+par (mar = c(0, 0, 0, 0))
+plot(st_geometry(st_transform(filter(buffered_shapes, Name %in% sales$parcel_id), crs = 3857)),
+     col = 'blue',
+     bgMap = bg_map_sales)
+plot(st_geometry(st_transform(filter(cd_shapes, Name %in% sales$parcel_id), crs = 3857)),
+     col = 'red',
+     add = TRUE)
+plot(st_transform(st_geometry(arch), 3857),
+     add = TRUE)
+mtext("Fig 2: Map of all parcels with sale recorded in sample",
+      outer = TRUE,
+      side = 3,
+      line = -1.5,
+      cex = 1.5)
+legend(x=-9281784,
+       y = 4022716,
+       legend = c("C-D Zoned", "Other Zoned"),
+       fill = c('red', 'blue'))
+dev.off()
+```
+
+
+
+```{r}
+### MISC GRAPHICS
+# Brief check to see if R-D design would be feasible
+png(file = path.expand(file.path("~", "Thesis", "R-D Plot.png")),
+    width = 6 * ppi, height = 4 * ppi, res = ppi)
+ggplot(data = condos,
+       aes(x = sale_date, y = sale_price, color = moratorium))+
+  geom_point()+
+  geom_vline(xintercept = as.numeric(as.Date("2017/02/07")))+
+  geom_smooth(method = "loess") +
+  labs(title = "Figure 3",
+       subtitle = "Quick and Dirty Evaluation of R-D Feasibility, Condos",
+       x = "Sale Date",
+       y = "Sale Price") +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_bw()
+dev.off()
+
+```
+
+
